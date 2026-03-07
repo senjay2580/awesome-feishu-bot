@@ -1,0 +1,85 @@
+name: 监听 Awesome 更新推飞书
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查更新并推飞书
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          python3 << 'EOF'
+          import urllib.request, json, re, os, sys
+
+          CACHE_FILE = '.github/awesome_last_sha.txt'
+
+          api = "https://api.github.com/repos/sindresorhus/awesome/commits?path=readme.md&per_page=1"
+          req = urllib.request.Request(api, headers={'User-Agent': 'awesome-watcher'})
+          with urllib.request.urlopen(req) as r:
+              latest_sha = json.loads(r.read())[0]['sha']
+
+          last_sha = open(CACHE_FILE).read().strip() if os.path.exists(CACHE_FILE) else ''
+
+          if latest_sha == last_sha:
+              print("No update.")
+              sys.exit(0)
+
+          print(f"Updated: {last_sha[:7] or 'none'} -> {latest_sha[:7]}")
+
+          new_items = []
+          if last_sha:
+              diff_url = f"https://api.github.com/repos/sindresorhus/awesome/compare/{last_sha}...{latest_sha}"
+              req = urllib.request.Request(diff_url, headers={'User-Agent': 'awesome-watcher'})
+              with urllib.request.urlopen(req) as r:
+                  diff_data = json.loads(r.read())
+
+              for f in diff_data.get('files', []):
+                  if f['filename'] == 'readme.md':
+                      for line in f.get('patch', '').splitlines():
+                          if line.startswith('+') and not line.startswith('+++'):
+                              m = re.match(r'\+- \[([^\]]+)\]\((https?://[^)]+)\)(?: - (.+))?', line)
+                              if m:
+                                  new_items.append(m.groups())
+
+          os.makedirs('.github', exist_ok=True)
+          with open(CACHE_FILE, 'w') as f:
+              f.write(latest_sha)
+
+          webhook = os.environ.get('FEISHU_WEBHOOK', '')
+          if not webhook:
+              sys.exit(0)
+
+          commit_url = f"https://github.com/sindresorhus/awesome/commit/{latest_sha}"
+
+          if new_items:
+              lines = [f"🆕 Awesome List 新增 {len(new_items)} 个项目\n"]
+              for name, url, desc in new_items:
+                  desc_text = f"\n   {desc.strip()}" if desc else ""
+                  lines.append(f"• {name}{desc_text}\n  {url}")
+              text = "\n\n".join(lines) + f"\n\n🔗 {commit_url}"
+          else:
+              text = f"📝 Awesome List 有内容更新（无新增项目）\n🔗 {commit_url}"
+
+          payload = {"msg_type": "text", "content": {"text": text}}
+          data = json.dumps(payload).encode('utf-8')
+          req = urllib.request.Request(webhook, data=data, headers={'Content-Type': 'application/json'})
+          with urllib.request.urlopen(req) as resp:
+              print(resp.read().decode())
+          EOF
+
+      - name: 更新 SHA 缓存到仓库
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/awesome_last_sha.txt
+          git diff --staged --quiet || git commit -m "chore: update awesome sha cache"
+          git push

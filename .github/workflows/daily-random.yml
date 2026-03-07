@@ -1,0 +1,51 @@
+name: 每日随机推送 Awesome 项目
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  push-random:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 随机抽 10 个项目推飞书
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: |
+          python3 << 'EOF'
+          import urllib.request, json, random, re, os
+
+          url = "https://raw.githubusercontent.com/sindresorhus/awesome/main/readme.md"
+          with urllib.request.urlopen(url) as r:
+              content = r.read().decode('utf-8')
+
+          pattern = r'^- \[([^\]]+)\]\((https?://[^)]+)\)(?: - (.+))?'
+          projects = []
+          for line in content.splitlines():
+              m = re.match(pattern, line.strip())
+              if m:
+                  name, link, desc = m.groups()
+                  projects.append((name, link, desc or ''))
+
+          selected = random.sample(projects, min(10, len(projects)))
+
+          import datetime
+          today = datetime.date.today().strftime('%Y-%m-%d')
+          lines = [f"🎲 Awesome 每日随机推荐 · {today}\n"]
+          for i, (name, link, desc) in enumerate(selected, 1):
+              desc_text = f"\n   {desc.strip()}" if desc else ""
+              lines.append(f"{i}. {name}{desc_text}\n   {link}")
+
+          message = "\n\n".join(lines)
+
+          payload = {"msg_type": "text", "content": {"text": message}}
+          data = json.dumps(payload).encode('utf-8')
+          req = urllib.request.Request(
+              os.environ['FEISHU_WEBHOOK'],
+              data=data,
+              headers={'Content-Type': 'application/json'}
+          )
+          with urllib.request.urlopen(req) as resp:
+              print(resp.read().decode())
+          EOF
